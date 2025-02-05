@@ -250,6 +250,49 @@ func (cfg *apiConfig) createUserHdlr() http.Handler {
 	})
 }
 
+func (cfg *apiConfig) getChirpsHdlr() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		db := cfg.dbQueries
+		chirps, err := db.GetChirps(r.Context())
+		if err != nil {
+			log.Printf("Error getting chirps: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		type chirp struct {
+			ID        uuid.UUID `json:"id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Body      string    `json:"body"`
+			UserID    uuid.UUID `json:"user_id"`
+		}
+
+		var chirpsResp []chirp
+		for _, c := range chirps {
+			fmt.Printf("Chirp: %v\n", c)
+			chirpsResp = append(chirpsResp, chirp{
+				ID:        c.ID,
+				CreatedAt: c.CreatedAt,
+				UpdatedAt: c.UpdatedAt,
+				Body:      c.Body,
+				UserID:    c.UserID.UUID,
+			})
+		}
+
+		dat, err := json.Marshal(chirpsResp)
+		if err != nil {
+			log.Printf("Error marshalling JSON: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write(dat)
+	})
+}
+
 func main() {
 
 	godotenv.Load()
@@ -283,14 +326,12 @@ func main() {
 	serveMux.Handle("/admin/reset", err405Handler())
 	serveMux.Handle("POST /admin/reset", resetMetricsHandler())
 
-	// serveMux.Handle("/api/validate_chirp", err405Handler())
-	// serveMux.Handle("POST /api/validate_chirp", validateChirp())
-
 	serveMux.Handle("/api/users", err405Handler())
 	serveMux.Handle("POST /api/users", apiCfg.createUserHdlr())
 
 	serveMux.Handle("/api/chirps", err405Handler())
 	serveMux.Handle("POST /api/chirps", apiCfg.createChirpHdlr())
+	serveMux.Handle("GET /api/chirps", apiCfg.getChirpsHdlr())
 
 	server := http.Server{
 		Addr:    ":8080",
