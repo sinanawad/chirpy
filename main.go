@@ -9,7 +9,9 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/sinanawad/chirpy/internal/database"
@@ -18,6 +20,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
+	platform       string
 }
 
 var apiCfg apiConfig = apiConfig{}
@@ -44,7 +47,26 @@ func printMetricsHandler() http.Handler {
 func resetMetricsHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// reset the counter
+		ret := http.StatusOK
+
 		apiCfg.fileserverHits.Store(0)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8") //Content-Type: text/plain; charset=utf-8 header
+
+		if apiCfg.platform == "dev" {
+
+			err := apiCfg.dbQueries.Reset(r.Context())
+			if err != nil {
+				log.Printf("Error resetting metrics: %s", err)
+				w.WriteHeader(500)
+				return
+			}
+
+			ret = http.StatusOK
+		} else {
+			ret = http.StatusForbidden
+		}
+
+		w.WriteHeader(ret)
 	})
 }
 
@@ -92,23 +114,28 @@ func removeProfanity(msg string) string {
 
 }
 
-func validateChirp() http.Handler {
+func (cfg *apiConfig) createChirpHdlr() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		type inputParams struct {
-			Body string `json:"body"`
-		}
-
-		type validParams struct {
-			CleanedBody string `json:"cleaned_body"`
+			Body   string `json:"body"`
+			UserID string `json:"user_id"`
 		}
 
 		type errParams struct {
 			ErrorRet string `json:"error"`
 		}
 
+		type savedChirp struct {
+			ID        uuid.UUID `json:"id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Body      string    `json:"body"`
+			UserID    uuid.UUID `json:"user_id"`
+		}
+
 		retDetail := "Chirp is valid"
-		retStatus := 200
+		retStatus := 201
 
 		decoder := json.NewDecoder(r.Body)
 		params := inputParams{}
@@ -130,11 +157,24 @@ func validateChirp() http.Handler {
 
 		var respBody interface{}
 
-		if retStatus == 200 {
-			cleanedMsg := removeProfanity(params.Body)
-			fmt.Println("cleanedMsg: ", cleanedMsg)
-			retOK := validParams{
-				CleanedBody: cleanedMsg,
+		if retStatus == 201 {
+			// create chirp
+			paramsChirp := database.CreateChirpParams{
+				Body:   removeProfanity(params.Body),
+				UserID: uuid.NullUUID{UUID: uuid.MustParse(params.UserID), Valid: true},
+			}
+
+			chirp, err := apiCfg.dbQueries.CreateChirp(r.Context(), paramsChirp)
+			if err != nil {
+				log.Printf("Error creating chirp: %s", err)
+				retStatus = 500
+			}
+			retOK := savedChirp{
+				ID:        chirp.ID,
+				CreatedAt: chirp.CreatedAt,
+				UpdatedAt: chirp.UpdatedAt,
+				Body:      chirp.Body,
+				UserID:    chirp.UserID.UUID,
 			}
 			respBody = retOK
 		} else {
@@ -157,6 +197,59 @@ func validateChirp() http.Handler {
 	})
 }
 
+func (cfg *apiConfig) createUserHdlr() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		type inParams struct {
+			Email string `json:"email"`
+		}
+
+		type localUser struct {
+			ID        uuid.UUID `json:"id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Email     string    `json:"email"`
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		params := inParams{}
+
+		err := decoder.Decode(&params)
+
+		if err != nil {
+			log.Printf("Error decoding parameters: %s", err)
+			w.WriteHeader(400)
+			return
+		}
+
+		user, err := cfg.dbQueries.CreateUser(r.Context(), params.Email)
+		if err != nil {
+			log.Printf("Error creating user: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		lu := localUser{
+			ID:        user.ID,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
+		}
+
+		dat, err := json.Marshal(lu)
+		if err != nil {
+			log.Printf("Error marshalling JSON: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(201)
+		w.Write(dat)
+
+	})
+}
+
 func main() {
 
 	godotenv.Load()
@@ -166,7 +259,17 @@ func main() {
 		return
 	}
 
+	defer db.Close()
+
+	platform := os.Getenv("PLATFORM")
+	if platform == "" {
+		platform = "unknown"
+	} else {
+		platform = strings.ToLower(platform)
+	}
+
 	apiCfg.dbQueries = database.New(db)
+	apiCfg.platform = platform
 
 	serveMux := http.NewServeMux()
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(".")))))
@@ -177,11 +280,17 @@ func main() {
 	serveMux.Handle("GET /healthz", healthHandler())
 	serveMux.Handle("GET /metrics", printMetricsHandler())
 
-	serveMux.Handle("/reset", err405Handler())
-	serveMux.Handle("POST /reset", resetMetricsHandler())
+	serveMux.Handle("/admin/reset", err405Handler())
+	serveMux.Handle("POST /admin/reset", resetMetricsHandler())
 
-	serveMux.Handle("/api/validate_chirp", err405Handler())
-	serveMux.Handle("POST /api/validate_chirp", validateChirp())
+	// serveMux.Handle("/api/validate_chirp", err405Handler())
+	// serveMux.Handle("POST /api/validate_chirp", validateChirp())
+
+	serveMux.Handle("/api/users", err405Handler())
+	serveMux.Handle("POST /api/users", apiCfg.createUserHdlr())
+
+	serveMux.Handle("/api/chirps", err405Handler())
+	serveMux.Handle("POST /api/chirps", apiCfg.createChirpHdlr())
 
 	server := http.Server{
 		Addr:    ":8080",
