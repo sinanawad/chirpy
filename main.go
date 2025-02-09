@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/sinanawad/chirpy/internal/auth"
 	"github.com/sinanawad/chirpy/internal/database"
 )
 
@@ -21,6 +22,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	platform       string
+	secret         string
 }
 
 var apiCfg apiConfig = apiConfig{}
@@ -137,10 +139,29 @@ func (cfg *apiConfig) createChirpHdlr() http.Handler {
 		retDetail := "Chirp is valid"
 		retStatus := 201
 
+		bearerToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			log.Printf("Error getting bearer token: %s", err)
+			retDetail = "Unauthorized"
+			retStatus = 401
+		}
+
+		tokenUuid, err := auth.ValidateJWT(bearerToken, apiCfg.secret)
+		if err != nil {
+			log.Printf("Error validating JWT: %s", err)
+			retDetail = "Unauthorized"
+			retStatus = 401
+		}
+
+		if tokenUuid == uuid.Nil {
+			retDetail = "Unauthorized"
+			retStatus = 401
+		}
+
 		decoder := json.NewDecoder(r.Body)
 		params := inputParams{}
 
-		err := decoder.Decode(&params)
+		err = decoder.Decode(&params)
 
 		if err != nil {
 			log.Printf("Error decoding parameters: %s", err)
@@ -160,8 +181,9 @@ func (cfg *apiConfig) createChirpHdlr() http.Handler {
 		if retStatus == 201 {
 			// create chirp
 			paramsChirp := database.CreateChirpParams{
-				Body:   removeProfanity(params.Body),
-				UserID: uuid.NullUUID{UUID: uuid.MustParse(params.UserID), Valid: true},
+				Body: removeProfanity(params.Body),
+				//UserID: uuid.NullUUID{UUID: uuid.MustParse(params.UserID), Valid: true},
+				UserID: uuid.NullUUID{UUID: tokenUuid, Valid: true},
 			}
 
 			chirp, err := apiCfg.dbQueries.CreateChirp(r.Context(), paramsChirp)
@@ -201,7 +223,8 @@ func (cfg *apiConfig) createUserHdlr() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		type inParams struct {
-			Email string `json:"email"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
 		}
 
 		type localUser struct {
@@ -222,7 +245,20 @@ func (cfg *apiConfig) createUserHdlr() http.Handler {
 			return
 		}
 
-		user, err := cfg.dbQueries.CreateUser(r.Context(), params.Email)
+		hashedPassword, err := auth.HashPassword(params.Password)
+
+		if err != nil {
+			log.Printf("Error hashing password: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		up := database.CreateUserParams{
+			Email:          params.Email,
+			HashedPassword: hashedPassword,
+		}
+
+		user, err := cfg.dbQueries.CreateUser(r.Context(), up)
 		if err != nil {
 			log.Printf("Error creating user: %s", err)
 			w.WriteHeader(500)
@@ -252,14 +288,8 @@ func (cfg *apiConfig) createUserHdlr() http.Handler {
 
 func (cfg *apiConfig) getChirpsHdlr() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		db := cfg.dbQueries
-		chirps, err := db.GetChirps(r.Context())
-		if err != nil {
-			log.Printf("Error getting chirps: %s", err)
-			w.WriteHeader(500)
-			return
-		}
 
+		db := cfg.dbQueries
 		type chirp struct {
 			ID        uuid.UUID `json:"id"`
 			CreatedAt time.Time `json:"created_at"`
@@ -268,9 +298,47 @@ func (cfg *apiConfig) getChirpsHdlr() http.Handler {
 			UserID    uuid.UUID `json:"user_id"`
 		}
 
+		path := r.PathValue("id")
+		if path != "" {
+			fmt.Printf("Path: %s\n", path)
+
+			dbChirp, err := db.GetOneChirp(r.Context(), uuid.MustParse(path))
+			if err != nil {
+				log.Printf("Error getting chirp: %s", err)
+				w.WriteHeader(404)
+				return
+			}
+
+			var chirpResp chirp = chirp{
+				ID:        dbChirp.ID,
+				CreatedAt: dbChirp.CreatedAt,
+				UpdatedAt: dbChirp.UpdatedAt,
+				Body:      dbChirp.Body,
+				UserID:    dbChirp.UserID.UUID,
+			}
+
+			dat, err := json.Marshal(chirpResp)
+			if err != nil {
+				log.Printf("Error marshalling JSON: %s", err)
+				w.WriteHeader(500)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			w.Write(dat)
+			return
+		}
+
+		chirps, err := db.GetChirps(r.Context())
+		if err != nil {
+			log.Printf("Error getting chirps: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
 		var chirpsResp []chirp
 		for _, c := range chirps {
-			fmt.Printf("Chirp: %v\n", c)
 			chirpsResp = append(chirpsResp, chirp{
 				ID:        c.ID,
 				CreatedAt: c.CreatedAt,
@@ -293,6 +361,76 @@ func (cfg *apiConfig) getChirpsHdlr() http.Handler {
 	})
 }
 
+func (cfg *apiConfig) chirpyLoginHdlr() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		const defaultExpiryTime = 3600
+		type inParams struct {
+			Password   string `json:"password"`
+			Email      string `json:"email"`
+			ExpiryTime int    `json:"expires_in_seconds"`
+		}
+
+		type localUser struct {
+			ID        uuid.UUID `json:"id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Email     string    `json:"email"`
+			Token     string    `json:"token"`
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		params := inParams{}
+
+		err := decoder.Decode(&params)
+
+		if err != nil {
+			log.Printf("Error decoding parameters: %s", err)
+			w.WriteHeader(400)
+			return
+		}
+		if params.ExpiryTime == 0 {
+			params.ExpiryTime = defaultExpiryTime
+		}
+		user, err := apiCfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
+		if err != nil {
+			log.Printf("Error getting user: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		err = auth.CheckPasswordHash(params.Password, user.HashedPassword)
+		if err != nil {
+			w.WriteHeader(401)
+			return
+		}
+
+		lu := localUser{}
+		lu.ID = user.ID
+		lu.CreatedAt = user.CreatedAt
+		lu.UpdatedAt = user.UpdatedAt
+		lu.Email = user.Email
+		lu.Token, err = auth.MakeJWT(user.ID, apiCfg.secret, time.Duration(params.ExpiryTime)*time.Second)
+		if err != nil {
+			log.Printf("Error making JWT: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		dat, err := json.Marshal(lu)
+		if err != nil {
+			log.Printf("Error marshalling JSON: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write(dat)
+
+	})
+}
+
 func main() {
 
 	godotenv.Load()
@@ -301,6 +439,8 @@ func main() {
 	if err != nil {
 		return
 	}
+
+	mySecret := os.Getenv("MYSECRET")
 
 	defer db.Close()
 
@@ -313,6 +453,7 @@ func main() {
 
 	apiCfg.dbQueries = database.New(db)
 	apiCfg.platform = platform
+	apiCfg.secret = mySecret
 
 	serveMux := http.NewServeMux()
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(".")))))
@@ -331,7 +472,10 @@ func main() {
 
 	serveMux.Handle("/api/chirps", err405Handler())
 	serveMux.Handle("POST /api/chirps", apiCfg.createChirpHdlr())
-	serveMux.Handle("GET /api/chirps", apiCfg.getChirpsHdlr())
+	serveMux.Handle("GET /api/chirps/{id}", apiCfg.getChirpsHdlr())
+
+	serveMux.Handle("/api/login", err405Handler())
+	serveMux.Handle("POST /api/login", apiCfg.chirpyLoginHdlr())
 
 	server := http.Server{
 		Addr:    ":8080",
