@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
@@ -39,7 +41,8 @@ Set the Subject to a stringified version of the user’s id
 Use token.SignedString to sign the token with the secret key. Refer to here for an overview of the different signing methods and their respective key types.
 */
 
-func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (string, error) {
+func MakeJWT(userID uuid.UUID, tokenSecret string) (string, error) {
+	expiresIn := 1 * time.Hour
 	claims := jwt.RegisteredClaims{
 		Issuer:    "chirpy",
 		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
@@ -107,4 +110,14 @@ func GetBearerToken(headers http.Header) (string, error) {
 	}
 
 	return authHeaderParts[1], nil
+}
+
+func MakeRefreshToken() (string, error) {
+	token := make([]byte, 32)
+	_, err := rand.Read(token)
+	if err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(token), nil
 }

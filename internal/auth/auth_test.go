@@ -2,7 +2,6 @@ package auth
 
 import (
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -35,8 +34,7 @@ func TestJWT(t *testing.T) {
 
 	userID := uuid.New()
 	tokenSecret := "secret"
-	expiresIn := 3600 * time.Second
-	jwtStr, err := MakeJWT(userID, tokenSecret, expiresIn)
+	jwtStr, err := MakeJWT(userID, tokenSecret)
 	if err != nil {
 		t.Fatalf("Error making JWT: %s", err)
 	}

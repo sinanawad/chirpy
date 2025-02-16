@@ -372,11 +372,12 @@ func (cfg *apiConfig) chirpyLoginHdlr() http.Handler {
 		}
 
 		type localUser struct {
-			ID        uuid.UUID `json:"id"`
-			CreatedAt time.Time `json:"created_at"`
-			UpdatedAt time.Time `json:"updated_at"`
-			Email     string    `json:"email"`
-			Token     string    `json:"token"`
+			ID           uuid.UUID `json:"id"`
+			CreatedAt    time.Time `json:"created_at"`
+			UpdatedAt    time.Time `json:"updated_at"`
+			Email        string    `json:"email"`
+			Token        string    `json:"token"`
+			RefreshToken string    `json:"refresh_token"`
 		}
 
 		decoder := json.NewDecoder(r.Body)
@@ -410,9 +411,26 @@ func (cfg *apiConfig) chirpyLoginHdlr() http.Handler {
 		lu.CreatedAt = user.CreatedAt
 		lu.UpdatedAt = user.UpdatedAt
 		lu.Email = user.Email
-		lu.Token, err = auth.MakeJWT(user.ID, apiCfg.secret, time.Duration(params.ExpiryTime)*time.Second)
+		lu.Token, err = auth.MakeJWT(user.ID, apiCfg.secret)
 		if err != nil {
 			log.Printf("Error making JWT: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+		lu.RefreshToken, err = auth.MakeRefreshToken()
+		if err != nil {
+			log.Printf("Error making refresh token: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		_, err = apiCfg.dbQueries.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+			Token:     lu.RefreshToken,
+			UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
+			ExpiresAt: time.Now().Add(time.Duration(60*24) * time.Hour),
+		})
+		if err != nil {
+			log.Printf("Error saving refreshToken: %s", err)
 			w.WriteHeader(500)
 			return
 		}
@@ -427,6 +445,104 @@ func (cfg *apiConfig) chirpyLoginHdlr() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		w.Write(dat)
+
+	})
+}
+
+func (cfg *apiConfig) refreshTokenHdlr() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		type retParams struct {
+			Token string `json:"token"`
+		}
+
+		retStatus := 200
+
+		refreshToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			log.Printf("Error getting refresh token: %s", err)
+			retStatus = 401
+		}
+
+		refreshTokenDb, err := apiCfg.dbQueries.GetRefreshToken(r.Context(), refreshToken)
+		if err != nil {
+			log.Printf("Error validating refresh token: %s", err)
+			retStatus = 401
+		}
+
+		if refreshTokenDb.Token == "" || refreshTokenDb.UserID.UUID == uuid.Nil || !refreshTokenDb.RevokedAt.Valid {
+			retStatus = 401
+		}
+
+		params := retParams{
+			Token: refreshTokenDb.Token,
+		}
+
+		var respBody interface{}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(retStatus)
+
+		if retStatus == 200 {
+			respBody = params
+
+			dat, err := json.Marshal(respBody)
+			if err != nil {
+				log.Printf("Error marshalling JSON: %s", err)
+				w.WriteHeader(500)
+				return
+			}
+			w.Write(dat)
+		}
+
+	})
+}
+
+func (cfg *apiConfig) revokeRefreshTokenHdlr() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		type retParams struct {
+			Token string `json:"token"`
+		}
+
+		retStatus := 200
+
+		refreshToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			log.Printf("Error getting refresh token: %s", err)
+			retStatus = 401
+		}
+
+		refreshTokenDb, err := apiCfg.dbQueries.RevokeRefreshToken(r.Context(), refreshToken)
+		if err != nil {
+			log.Printf("Error validating refresh token: %s", err)
+			retStatus = 401
+		}
+
+		if refreshTokenDb.Token == "" || refreshTokenDb.UserID.UUID == uuid.Nil || !refreshTokenDb.RevokedAt.Valid {
+			retStatus = 401
+		}
+
+		params := retParams{
+			Token: refreshTokenDb.Token,
+		}
+
+		var respBody interface{}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(retStatus)
+
+		if retStatus == 200 {
+			respBody = params
+
+			dat, err := json.Marshal(respBody)
+			if err != nil {
+				log.Printf("Error marshalling JSON: %s", err)
+				w.WriteHeader(500)
+				return
+			}
+			w.Write(dat)
+		}
 
 	})
 }
@@ -476,6 +592,12 @@ func main() {
 
 	serveMux.Handle("/api/login", err405Handler())
 	serveMux.Handle("POST /api/login", apiCfg.chirpyLoginHdlr())
+
+	serveMux.Handle("/api/refresh", err405Handler())
+	serveMux.Handle("POST /api/refresh", apiCfg.refreshTokenHdlr())
+
+	serveMux.Handle("/api/revoke", err405Handler())
+	serveMux.Handle("POST /api/revoke", apiCfg.revokeRefreshTokenHdlr())
 
 	server := http.Server{
 		Addr:    ":8080",
