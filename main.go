@@ -242,22 +242,16 @@ func (cfg *apiConfig) updateUserHdlr() http.Handler {
 			return
 		}
 
-		refreshToken, err := auth.GetBearerToken(r.Header)
+		accessToken, err := auth.GetBearerToken(r.Header)
 		if err != nil {
 			fmt.Printf("Error GetBearerToken: %s", err)
 			w.WriteHeader(401)
 			return
 		}
 
-		refreshTokenDb, err := apiCfg.dbQueries.GetRefreshToken(r.Context(), refreshToken)
-		if err != nil {
-			fmt.Printf("Error GetRefreshToken: %s", err)
-			w.WriteHeader(401)
-			return
-		}
-
-		if refreshTokenDb.Token == "" || refreshTokenDb.UserID.UUID == uuid.Nil || refreshTokenDb.RevokedAt.Valid {
-			fmt.Printf("Error invalid Token: %s", refreshTokenDb.Token)
+		dbUserUUID, err := auth.ValidateJWT(accessToken, cfg.secret)
+		if err != nil || dbUserUUID == uuid.Nil {
+			fmt.Printf("Error ValidateJWT: %s", err)
 			w.WriteHeader(401)
 			return
 		}
@@ -269,7 +263,43 @@ func (cfg *apiConfig) updateUserHdlr() http.Handler {
 			w.WriteHeader(500)
 			return
 		}
+		up := database.UpdateUserParams{
+			ID:             dbUserUUID,
+			Email:          params.Email,
+			HashedPassword: hashedPassword,
+		}
 
+		usr, err := cfg.dbQueries.UpdateUser(r.Context(), up)
+		if err != nil {
+			log.Printf("Error updating user: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		type localUser struct {
+			ID        uuid.UUID `json:"id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Email     string    `json:"email"`
+		}
+
+		lu := localUser{
+			ID:        dbUserUUID,
+			CreatedAt: usr.CreatedAt,
+			UpdatedAt: usr.UpdatedAt,
+			Email:     usr.Email,
+		}
+
+		dat, err := json.Marshal(lu)
+		if err != nil {
+			log.Printf("Error marshalling JSON: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write(dat)
 	})
 }
 
@@ -526,6 +556,7 @@ func (cfg *apiConfig) refreshTokenHdlr() http.Handler {
 			fmt.Printf("Error GetBearerToken: %s", err)
 			retStatus = 401
 		}
+		fmt.Println(">>>> refreshTokenHdlr - token ", refreshToken)
 
 		refreshTokenDb, err := apiCfg.dbQueries.GetRefreshToken(r.Context(), refreshToken)
 		if err != nil {
@@ -579,6 +610,7 @@ func (cfg *apiConfig) revokeRefreshTokenHdlr() http.Handler {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		fmt.Println(">>>> revokeRefreshToken - token ", refreshToken)
 
 		_, err = apiCfg.dbQueries.RevokeRefreshToken(r.Context(), refreshToken)
 		if err != nil {
