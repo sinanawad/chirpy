@@ -118,6 +118,8 @@ func removeProfanity(msg string) string {
 
 func (cfg *apiConfig) createChirpHdlr() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("<<<< createChirpHdlr")
+		defer fmt.Println(">>>> createChirpHdlr")
 
 		type inputParams struct {
 			Body   string `json:"body"`
@@ -221,6 +223,8 @@ func (cfg *apiConfig) createChirpHdlr() http.Handler {
 
 func (cfg *apiConfig) createUserHdlr() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println(">>>> createUserHdlr")
+		defer fmt.Println("<<<< createUserHdlr")
 
 		type inParams struct {
 			Email    string `json:"email"`
@@ -288,6 +292,8 @@ func (cfg *apiConfig) createUserHdlr() http.Handler {
 
 func (cfg *apiConfig) getChirpsHdlr() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println(">>>> getChirpsHdlr")
+		defer fmt.Println("<<<< getChirpsHdlr")
 
 		db := cfg.dbQueries
 		type chirp struct {
@@ -363,6 +369,8 @@ func (cfg *apiConfig) getChirpsHdlr() http.Handler {
 
 func (cfg *apiConfig) chirpyLoginHdlr() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println(">>>> chirpyLoginHdlr")
+		defer fmt.Println("<<<< chirpyLoginHdlr")
 
 		const defaultExpiryTime = 3600
 		type inParams struct {
@@ -452,6 +460,9 @@ func (cfg *apiConfig) chirpyLoginHdlr() http.Handler {
 func (cfg *apiConfig) refreshTokenHdlr() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
+		fmt.Println(">>>> refreshTokenHdlr")
+		defer fmt.Println("<<<< refreshTokenHdlr")
+
 		type retParams struct {
 			Token string `json:"token"`
 		}
@@ -460,22 +471,30 @@ func (cfg *apiConfig) refreshTokenHdlr() http.Handler {
 
 		refreshToken, err := auth.GetBearerToken(r.Header)
 		if err != nil {
-			log.Printf("Error getting refresh token: %s", err)
+			fmt.Printf("Error GetBearerToken: %s", err)
 			retStatus = 401
 		}
 
 		refreshTokenDb, err := apiCfg.dbQueries.GetRefreshToken(r.Context(), refreshToken)
 		if err != nil {
-			log.Printf("Error validating refresh token: %s", err)
+			fmt.Printf("Error GetRefreshToken: %s", err)
 			retStatus = 401
 		}
 
-		if refreshTokenDb.Token == "" || refreshTokenDb.UserID.UUID == uuid.Nil || !refreshTokenDb.RevokedAt.Valid {
+		if refreshTokenDb.Token == "" || refreshTokenDb.UserID.UUID == uuid.Nil || refreshTokenDb.RevokedAt.Valid {
+			fmt.Printf("Error invalid Token: %s", refreshTokenDb.Token)
 			retStatus = 401
+		}
+
+		// create a new JWT
+		token, err := auth.MakeJWT(refreshTokenDb.UserID.UUID, apiCfg.secret)
+		if err != nil {
+			fmt.Printf("Error MakeJWT: %s", err)
+			retStatus = 500
 		}
 
 		params := retParams{
-			Token: refreshTokenDb.Token,
+			Token: token,
 		}
 
 		var respBody interface{}
@@ -488,7 +507,7 @@ func (cfg *apiConfig) refreshTokenHdlr() http.Handler {
 
 			dat, err := json.Marshal(respBody)
 			if err != nil {
-				log.Printf("Error marshalling JSON: %s", err)
+				fmt.Printf("Error marshalling JSON: %s", err)
 				w.WriteHeader(500)
 				return
 			}
@@ -500,50 +519,22 @@ func (cfg *apiConfig) refreshTokenHdlr() http.Handler {
 
 func (cfg *apiConfig) revokeRefreshTokenHdlr() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
-		type retParams struct {
-			Token string `json:"token"`
-		}
-
-		retStatus := 200
+		fmt.Println(">>>> RevokeRefreshTokenHdlr")
+		defer fmt.Println("<<<< RevokeRefreshTokenHdlr")
 
 		refreshToken, err := auth.GetBearerToken(r.Header)
 		if err != nil {
-			log.Printf("Error getting refresh token: %s", err)
-			retStatus = 401
+			w.WriteHeader(http.StatusUnauthorized)
+			return
 		}
 
-		refreshTokenDb, err := apiCfg.dbQueries.RevokeRefreshToken(r.Context(), refreshToken)
+		_, err = apiCfg.dbQueries.RevokeRefreshToken(r.Context(), refreshToken)
 		if err != nil {
-			log.Printf("Error validating refresh token: %s", err)
-			retStatus = 401
+			w.WriteHeader(http.StatusUnauthorized)
+			return
 		}
 
-		if refreshTokenDb.Token == "" || refreshTokenDb.UserID.UUID == uuid.Nil || !refreshTokenDb.RevokedAt.Valid {
-			retStatus = 401
-		}
-
-		params := retParams{
-			Token: refreshTokenDb.Token,
-		}
-
-		var respBody interface{}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(retStatus)
-
-		if retStatus == 200 {
-			respBody = params
-
-			dat, err := json.Marshal(respBody)
-			if err != nil {
-				log.Printf("Error marshalling JSON: %s", err)
-				w.WriteHeader(500)
-				return
-			}
-			w.Write(dat)
-		}
-
+		w.WriteHeader(http.StatusNoContent) // 204 status code
 	})
 }
 

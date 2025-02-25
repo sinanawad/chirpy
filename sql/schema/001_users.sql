@@ -24,5 +24,5 @@ CREATE TABLE chirps (
 
 -- +goose Down
 DROP TABLE chirps;
-DROP TABLE users;
 DROP TABLE refresh_tokens;
+DROP TABLE users;
