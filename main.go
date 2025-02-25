@@ -221,6 +221,58 @@ func (cfg *apiConfig) createChirpHdlr() http.Handler {
 	})
 }
 
+func (cfg *apiConfig) updateUserHdlr() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println(">>>> updateUserHdlr")
+		defer fmt.Println("<<<< updateUserHdlr")
+
+		type inParams struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		params := inParams{}
+
+		err := decoder.Decode(&params)
+
+		if err != nil {
+			log.Printf("Error decoding parameters: %s", err)
+			w.WriteHeader(400)
+			return
+		}
+
+		refreshToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			fmt.Printf("Error GetBearerToken: %s", err)
+			w.WriteHeader(401)
+			return
+		}
+
+		refreshTokenDb, err := apiCfg.dbQueries.GetRefreshToken(r.Context(), refreshToken)
+		if err != nil {
+			fmt.Printf("Error GetRefreshToken: %s", err)
+			w.WriteHeader(401)
+			return
+		}
+
+		if refreshTokenDb.Token == "" || refreshTokenDb.UserID.UUID == uuid.Nil || refreshTokenDb.RevokedAt.Valid {
+			fmt.Printf("Error invalid Token: %s", refreshTokenDb.Token)
+			w.WriteHeader(401)
+			return
+		}
+
+		hashedPassword, err := auth.HashPassword(params.Password)
+
+		if err != nil {
+			log.Printf("Error hashing password: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+	})
+}
+
 func (cfg *apiConfig) createUserHdlr() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println(">>>> createUserHdlr")
@@ -576,6 +628,7 @@ func main() {
 
 	serveMux.Handle("/api/users", err405Handler())
 	serveMux.Handle("POST /api/users", apiCfg.createUserHdlr())
+	serveMux.Handle("PUT /api/users", apiCfg.updateUserHdlr())
 
 	serveMux.Handle("/api/chirps", err405Handler())
 	serveMux.Handle("POST /api/chirps", apiCfg.createChirpHdlr())
