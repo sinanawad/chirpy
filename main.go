@@ -449,6 +449,64 @@ func (cfg *apiConfig) getChirpsHdlr() http.Handler {
 	})
 }
 
+func (cfg *apiConfig) deleteChirpsHdlr() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println(">>>> deleteChirpsHdlr")
+		defer fmt.Println("<<<< deleteChirpsHdlr")
+
+		bearerToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			log.Printf("Error getting bearer token: %s", err)
+			w.WriteHeader(401)
+			return
+		}
+
+		tokenUuid, err := auth.ValidateJWT(bearerToken, apiCfg.secret)
+		if err != nil {
+			log.Printf("Error validating JWT: %s", err)
+			w.WriteHeader(401)
+		}
+
+		db := cfg.dbQueries
+		// type chirp struct {
+		// 	ID        uuid.UUID `json:"id"`
+		// 	CreatedAt time.Time `json:"created_at"`
+		// 	UpdatedAt time.Time `json:"updated_at"`
+		// 	Body      string    `json:"body"`
+		// 	UserID    uuid.UUID `json:"user_id"`
+		// }
+
+		path := r.PathValue("id")
+		if path == "" {
+			fmt.Printf("No chirp ID")
+			w.WriteHeader(400)
+			return
+		}
+
+		dbChirp, err := db.GetOneChirp(r.Context(), uuid.MustParse(path))
+		if err != nil {
+			log.Printf("Error getting chirp: %s", err)
+			w.WriteHeader(404)
+			return
+		}
+
+		if dbChirp.UserID.UUID != tokenUuid {
+			log.Printf("Error deleting chirp, Unauthorized: %s", err)
+			w.WriteHeader(403)
+			return
+		}
+
+		dbChirp, err = db.DeleteChirp(r.Context(), dbChirp.ID)
+		if err != nil {
+			log.Printf("Error deleting chirp: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		w.WriteHeader(204)
+	})
+}
+
 func (cfg *apiConfig) chirpyLoginHdlr() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println(">>>> chirpyLoginHdlr")
@@ -665,6 +723,7 @@ func main() {
 	serveMux.Handle("/api/chirps", err405Handler())
 	serveMux.Handle("POST /api/chirps", apiCfg.createChirpHdlr())
 	serveMux.Handle("GET /api/chirps/{id}", apiCfg.getChirpsHdlr())
+	serveMux.Handle("DELETE /api/chirps/{id}", apiCfg.deleteChirpsHdlr())
 
 	serveMux.Handle("/api/login", err405Handler())
 	serveMux.Handle("POST /api/login", apiCfg.chirpyLoginHdlr())
