@@ -23,6 +23,7 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 	platform       string
 	secret         string
+	polkaKey       string
 }
 
 var apiCfg apiConfig = apiConfig{}
@@ -242,10 +243,23 @@ func (cfg *apiConfig) polkaWebhook() http.Handler {
 		// 	},
 		// }
 
+		apiKey, err := auth.GetAPIKey(r.Header)
+		if err != nil {
+			fmt.Printf("Error GetAPIKey: %s", err)
+			w.WriteHeader(401)
+			return
+		}
+
+		if apiKey != cfg.polkaKey {
+			fmt.Printf("Error API Key: %s", err)
+			w.WriteHeader(401)
+			return
+		}
+
 		decoder := json.NewDecoder(r.Body)
 		params := webhookEvent{}
 
-		err := decoder.Decode(&params)
+		err = decoder.Decode(&params)
 
 		if err != nil {
 			log.Printf("Error decoding parameters: %s", err)
@@ -762,6 +776,9 @@ func main() {
 	} else {
 		platform = strings.ToLower(platform)
 	}
+
+	polkaKey := os.Getenv("POLKA_KEY")
+	apiCfg.polkaKey = polkaKey
 
 	apiCfg.dbQueries = database.New(db)
 	apiCfg.platform = platform
