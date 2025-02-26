@@ -32,6 +32,7 @@ type User struct {
 	ID             uuid.UUID
 	Email          string
 	HashedPassword string
+	IsChirpyRed    bool
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }

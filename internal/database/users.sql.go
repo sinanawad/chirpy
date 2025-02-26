@@ -10,15 +10,16 @@ import (
 )
 
 const createUser = `-- name: CreateUser :one
-INSERT INTO users (id, created_at, updated_at, email, hashed_password)
+INSERT INTO users (id, created_at, updated_at, email, hashed_password, is_chirpy_red)
 VALUES (
     gen_random_uuid(),
     NOW(),
     NOW(),
     $1,
-    $2
+    $2,
+    FALSE
 )
-RETURNING id, email, hashed_password, created_at, updated_at
+RETURNING id, email, hashed_password, is_chirpy_red, created_at, updated_at
 `
 
 type CreateUserParams struct {
@@ -33,6 +34,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.ID,
 		&i.Email,
 		&i.HashedPassword,
+		&i.IsChirpyRed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

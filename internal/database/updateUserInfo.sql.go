@@ -17,7 +17,7 @@ SET email = $1,
     hashed_password = $2,
     updated_at = NOW()
 WHERE id = $3
-RETURNING id, email, hashed_password, created_at, updated_at
+RETURNING id, email, hashed_password, is_chirpy_red, created_at, updated_at
 `
 
 type UpdateUserParams struct {
@@ -33,6 +33,7 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 		&i.ID,
 		&i.Email,
 		&i.HashedPassword,
+		&i.IsChirpyRed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

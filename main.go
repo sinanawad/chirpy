@@ -221,6 +221,65 @@ func (cfg *apiConfig) createChirpHdlr() http.Handler {
 	})
 }
 
+func (cfg *apiConfig) polkaWebhook() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println(">>>> polkaWebhook")
+		defer fmt.Println("<<<< polkaWebhook")
+
+		type webhookEvent struct {
+			Event string `json:"event"`
+			Data  struct {
+				UserID string `json:"user_id"`
+			} `json:"data"`
+		}
+
+		// event := webhookEvent{
+		// 	Event: "user.upgraded",
+		// 	Data: struct {
+		// 		UserID string `json:"user_id"`
+		// 	}{
+		// 		UserID: "3311741c-680c-4546-99f3-fc9efac2036c",
+		// 	},
+		// }
+
+		decoder := json.NewDecoder(r.Body)
+		params := webhookEvent{}
+
+		err := decoder.Decode(&params)
+
+		if err != nil {
+			log.Printf("Error decoding parameters: %s", err)
+			w.WriteHeader(400)
+			return
+		}
+
+		if params.Event != "user.upgraded" {
+			log.Printf("Event is not user.upgraded: %s", params.Event)
+			w.WriteHeader(204)
+			return
+		}
+
+		userID, err := uuid.Parse(params.Data.UserID)
+		if err != nil {
+			log.Printf("Error parsing userID: %s", err)
+			w.WriteHeader(400)
+			return
+		}
+
+		_, err = cfg.dbQueries.UpgradeUserToRed(r.Context(), database.UpgradeUserToRedParams{
+			IsChirpyRed: true,
+			ID:          userID,
+		})
+
+		if err != nil {
+			log.Printf("Error upgrading user: %s", err)
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(204)
+	})
+}
+
 func (cfg *apiConfig) updateUserHdlr() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println(">>>> updateUserHdlr")
@@ -314,10 +373,11 @@ func (cfg *apiConfig) createUserHdlr() http.Handler {
 		}
 
 		type localUser struct {
-			ID        uuid.UUID `json:"id"`
-			CreatedAt time.Time `json:"created_at"`
-			UpdatedAt time.Time `json:"updated_at"`
-			Email     string    `json:"email"`
+			ID          uuid.UUID `json:"id"`
+			CreatedAt   time.Time `json:"created_at"`
+			UpdatedAt   time.Time `json:"updated_at"`
+			Email       string    `json:"email"`
+			IsChirpyRed bool      `json:"is_chirpy_red"`
 		}
 
 		decoder := json.NewDecoder(r.Body)
@@ -352,10 +412,11 @@ func (cfg *apiConfig) createUserHdlr() http.Handler {
 		}
 
 		lu := localUser{
-			ID:        user.ID,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-			Email:     user.Email,
+			ID:          user.ID,
+			CreatedAt:   user.CreatedAt,
+			UpdatedAt:   user.UpdatedAt,
+			Email:       user.Email,
+			IsChirpyRed: user.IsChirpyRed,
 		}
 
 		dat, err := json.Marshal(lu)
@@ -526,6 +587,7 @@ func (cfg *apiConfig) chirpyLoginHdlr() http.Handler {
 			Email        string    `json:"email"`
 			Token        string    `json:"token"`
 			RefreshToken string    `json:"refresh_token"`
+			IsChirpyRed  bool      `json:"is_chirpy_red"`
 		}
 
 		decoder := json.NewDecoder(r.Body)
@@ -559,6 +621,7 @@ func (cfg *apiConfig) chirpyLoginHdlr() http.Handler {
 		lu.CreatedAt = user.CreatedAt
 		lu.UpdatedAt = user.UpdatedAt
 		lu.Email = user.Email
+		lu.IsChirpyRed = user.IsChirpyRed
 		lu.Token, err = auth.MakeJWT(user.ID, apiCfg.secret)
 		if err != nil {
 			log.Printf("Error making JWT: %s", err)
@@ -733,6 +796,9 @@ func main() {
 
 	serveMux.Handle("/api/revoke", err405Handler())
 	serveMux.Handle("POST /api/revoke", apiCfg.revokeRefreshTokenHdlr())
+
+	serveMux.Handle("/api/polka/webhooks", err405Handler())
+	serveMux.Handle("POST /api/polka/webhooks", apiCfg.polkaWebhook())
 
 	server := http.Server{
 		Addr:    ":8080",
