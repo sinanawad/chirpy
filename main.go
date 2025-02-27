@@ -493,7 +493,75 @@ func (cfg *apiConfig) getChirpsHdlr() http.Handler {
 			return
 		}
 
-		chirps, err := db.GetChirps(r.Context())
+		var chirps []database.Chirp
+		var err error
+		path = r.PathValue("author_id")
+		if path != "" {
+			fmt.Printf("Path: %s\n", path)
+
+			chirps, err = db.GetChirpsByAuthorID(r.Context(), uuid.NullUUID{UUID: uuid.MustParse(path), Valid: true})
+			if err != nil {
+				log.Printf("Error getting chirps: %s", err)
+				w.WriteHeader(500)
+				return
+			}
+		} else {
+			chirps, err = db.GetChirps(r.Context())
+			if err != nil {
+				log.Printf("Error getting chirps: %s", err)
+				w.WriteHeader(500)
+				return
+			}
+		}
+
+		var chirpsResp []chirp
+		for _, c := range chirps {
+			chirpsResp = append(chirpsResp, chirp{
+				ID:        c.ID,
+				CreatedAt: c.CreatedAt,
+				UpdatedAt: c.UpdatedAt,
+				Body:      c.Body,
+				UserID:    c.UserID.UUID,
+			})
+		}
+
+		dat, err := json.Marshal(chirpsResp)
+		if err != nil {
+			log.Printf("Error marshalling JSON: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write(dat)
+	})
+}
+
+func (cfg *apiConfig) getChirpsByAuthorHdlr() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println(">>>> getChirpsByAuthor")
+		defer fmt.Println("<<<< getChirpsByAuthor")
+
+		db := cfg.dbQueries
+		type chirp struct {
+			ID        uuid.UUID `json:"id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Body      string    `json:"body"`
+			UserID    uuid.UUID `json:"user_id"`
+		}
+
+		path := r.PathValue("author_id")
+		if path == "" {
+			fmt.Printf("No author ID")
+			w.WriteHeader(400)
+			return
+		}
+
+		fmt.Printf("Path: %s\n", path)
+
+		chirps, err := db.GetChirpsByAuthorID(r.Context(), uuid.NullUUID{UUID: uuid.MustParse(path), Valid: true})
 		if err != nil {
 			log.Printf("Error getting chirps: %s", err)
 			w.WriteHeader(500)
